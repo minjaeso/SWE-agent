@@ -1,6 +1,6 @@
+// Run.js
 import React, { useState, useRef, useEffect } from "react";
 import axios from "axios";
-import io from "socket.io-client";
 import "./static/run.css";
 import AgentFeed from "./components/panels/AgentFeed";
 import EnvFeed from "./components/panels/EnvFeed";
@@ -8,12 +8,11 @@ import LogPanel from "./components/panels/LogPanel";
 import LRunControl from "./components/controls/LRunControl";
 import { useImmer } from "use-immer";
 
-const url = ""; // Will get this from .env
-// Connect to Socket.io
-const socket = io(url);
+const url = ""; // 기본 URL (예: process.env.API_URL 등을 사용할 수 있습니다)
+axios.defaults.baseURL = url;
 
 function Run() {
-  const [isConnected, setIsConnected] = useState(socket.connected);
+  const [isConnected, setIsConnected] = useState(true);
   const [errorBanner, setErrorBanner] = useState("");
 
   const runConfigDefault = {
@@ -59,18 +58,10 @@ function Run() {
 
   const stillComputingTimeoutRef = useRef(null);
 
-  axios.defaults.baseURL = url;
-
   function scrollToHighlightedStep(highlightedStep, ref) {
     if (highlightedStep && ref.current) {
-      console.log(
-        "Scrolling to highlighted step",
-        highlightedStep,
-        ref.current,
-      );
-      const firstStepMessage = ref.current.querySelector(
-        `.step${highlightedStep}`,
-      );
+      console.log("Scrolling to highlighted step", highlightedStep, ref.current);
+      const firstStepMessage = ref.current.querySelector(`.step${highlightedStep}`);
       if (firstStepMessage) {
         window.requestAnimationFrame(() => {
           ref.current.scrollTo({
@@ -87,16 +78,11 @@ function Run() {
   }
 
   const handleMouseEnter = (item, feedRef) => {
-    if (isComputing) {
-      return;
-    }
-
+    if (isComputing) return;
     const highlightedStep = item.step;
-
     if (hoverTimeoutRef.current) {
       clearTimeout(hoverTimeoutRef.current);
     }
-
     hoverTimeoutRef.current = setTimeout(() => {
       if (!isComputing) {
         setHighlightedStep(highlightedStep);
@@ -107,13 +93,12 @@ function Run() {
 
   const handleMouseLeave = () => {
     console.log("Mouse left");
-    if (hoverTimeoutRef.current) {
-      clearTimeout(hoverTimeoutRef.current);
-    }
+    if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
     setHighlightedStep(null);
   };
 
   const requeueStopComputeTimeout = () => {
+    // 필요 시 타임아웃 재설정 (현재 주석 처리)
     // clearTimeout(stillComputingTimeoutRef.current);
     // setIsComputing(true);
     // stillComputingTimeoutRef.current = setTimeout(() => {
@@ -122,11 +107,11 @@ function Run() {
     // }, 30000);
   };
 
-  // Handle form submission
+  // 폼 제출 시 /run 엔드포인트에 요청을 보냄
   const handleSubmit = async (event) => {
+    event.preventDefault();
     setTabKey(null);
     setIsComputing(true);
-    event.preventDefault();
     setAgentFeed([]);
     setEnvFeed([]);
     setLogs("");
@@ -163,75 +148,76 @@ function Run() {
     }
   };
 
-  const scrollDetectedLog = () =>
-    checkScrollPosition(logsRef, isLogScrolled, 58);
+  const scrollDetectedLog = () => checkScrollPosition(logsRef, isLogScrolled, 58);
   const scrollLog = () => scrollToBottom(logsRef, isLogScrolled);
-
-  const scrollDetectedEnv = () =>
-    checkScrollPosition(envFeedRef, isEnvScrolled);
+  const scrollDetectedEnv = () => checkScrollPosition(envFeedRef, isEnvScrolled);
   const scrollEnv = () => scrollToBottom(envFeedRef, isEnvScrolled);
-
-  const scrollDetectedAgent = () =>
-    checkScrollPosition(agentFeedRef, isAgentScrolled);
+  const scrollDetectedAgent = () => checkScrollPosition(agentFeedRef, isAgentScrolled);
   const scrollAgent = () => scrollToBottom(agentFeedRef, isAgentScrolled);
 
-  // Use effect to listen to socket updates
-  React.useEffect(() => {
-    logsRef.current.addEventListener("scroll", scrollDetectedLog, {
-      passive: true,
-    });
-    envFeedRef.current.addEventListener("scroll", scrollDetectedEnv, {
-      passive: true,
-    });
-    agentFeedRef.current.addEventListener("scroll", scrollDetectedAgent, {
-      passive: true,
-    });
+  // SSE를 통해 서버 업데이트를 받습니다.
+  useEffect(() => {
+    const eventSource = new EventSource("/stream");
 
-    const handleUpdate = (data) => {
+    eventSource.onopen = () => {
+      console.log("Connected to server via SSE");
+      setIsConnected(true);
+      setErrorBanner("");
+    };
+
+    eventSource.onerror = (error) => {
+      console.error("EventSource error:", error);
+      setIsConnected(false);
+      setErrorBanner("Connection to flask server lost, please restart it.");
+      setIsComputing(false);
+      scrollLog(); // 로그 스크롤을 최하단으로
+    };
+
+    eventSource.addEventListener("agent", (e) => {
+      const data = JSON.parse(e.data);
       requeueStopComputeTimeout();
-      if (data.feed === "agent") {
-        setAgentFeed((prevMessages) => [
-          ...prevMessages,
-          {
-            type: data.type,
-            message: data.message,
-            format: data.format,
-            step: data.thought_idx,
-          },
-        ]);
-        if (envFeedRef.current) {
-          setTimeout(() => {
-            scrollEnv();
-          }, 100);
-        }
-      } else if (data.feed === "env") {
-        setEnvFeed((prevMessages) => [
-          ...prevMessages,
-          {
-            message: data.message,
-            type: data.type,
-            format: data.format,
-            step: data.thought_idx,
-          },
-        ]);
-        if (agentFeedRef.current) {
-          setTimeout(() => {
-            scrollAgent();
-          }, 100);
-        }
+      setAgentFeed((prevMessages) => [
+        ...prevMessages,
+        {
+          type: data.type,
+          message: data.message,
+          format: data.format,
+          step: data.thought_idx,
+        },
+      ]);
+      if (envFeedRef.current) {
+        setTimeout(() => {
+          scrollEnv();
+        }, 100);
       }
-      return () => {
-        logsRef.current.removeEventListener("scroll", scrollDetectedLog);
-        envFeedRef.current.removeEventListener("scroll", scrollDetectedEnv);
-        agentFeedRef.current.removeEventListener("scroll", scrollDetectedAgent);
-      };
-    };
+    });
 
-    const handleUpdateBanner = (data) => {
+    eventSource.addEventListener("env", (e) => {
+      const data = JSON.parse(e.data);
+      requeueStopComputeTimeout();
+      setEnvFeed((prevMessages) => [
+        ...prevMessages,
+        {
+          message: data.message,
+          type: data.type,
+          format: data.format,
+          step: data.thought_idx,
+        },
+      ]);
+      if (agentFeedRef.current) {
+        setTimeout(() => {
+          scrollAgent();
+        }, 100);
+      }
+    });
+
+    eventSource.addEventListener("banner", (e) => {
+      const data = JSON.parse(e.data);
       setErrorBanner(data.message);
-    };
+    });
 
-    const handleLogMessage = (data) => {
+    eventSource.addEventListener("log", (e) => {
+      const data = JSON.parse(e.data);
       requeueStopComputeTimeout();
       setLogs((prevLogs) => prevLogs + data.message);
       if (logsRef.current) {
@@ -239,47 +225,14 @@ function Run() {
           scrollLog();
         }, 100);
       }
-    };
-
-    const handleFinishedRun = (data) => {
-      setIsComputing(false);
-    };
-
-    socket.on("update", handleUpdate);
-    socket.on("log_message", handleLogMessage);
-    socket.on("update_banner", handleUpdateBanner);
-    socket.on("finish_run", handleFinishedRun);
-    socket.on("connect", () => {
-      console.log("Connected to server");
-      setIsConnected(true);
-      setErrorBanner("");
     });
 
-    socket.on("disconnect", () => {
-      console.log("Disconnected from server");
-      setIsConnected(false);
-      setErrorBanner("Connection to flask server lost, please restart it.");
+    eventSource.addEventListener("finish", (e) => {
       setIsComputing(false);
-      scrollLog(); // reveal copy button
-    });
-
-    socket.on("connect_error", (error) => {
-      setIsConnected(false);
-      setErrorBanner(
-        "Failed to connect to the flask server, please restart it.",
-      );
-      setIsComputing(false);
-      scrollLog(); // reveal copy button
     });
 
     return () => {
-      socket.off("update", handleUpdate);
-      socket.off("log_message", handleLogMessage);
-      socket.off("finish_run", handleFinishedRun);
-      socket.off("connect");
-      socket.off("disconnect");
-      socket.off("connect_error");
-      socket.off("update_banner", handleUpdateBanner);
+      eventSource.close();
     };
   }, []);
 
@@ -293,6 +246,7 @@ function Run() {
           <a
             href="https://github.com/SWE-agent/SWE-agent/issues"
             target="blank"
+            rel="noopener noreferrer"
           >
             our GitHub issue tracker
           </a>
